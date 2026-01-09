@@ -1,0 +1,18 @@
+[package]
+name = "mx_replay_uploader"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+egui = "0.33.3"
+egui_extras = "0.33.3"
+eframe = { version = "0.33.3", features = ["persistence"] }
+image = "0.25.9"
+notify = "8.2.0"
+preferences = "2.0.0"
+reqwest = { version = "0.13.1", features = ["blocking", "cookies", "form", "json", "multipart", "stream"] }
+rfd = "0.17.1"
+scraper = "0.25.0"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.49.0", features = ["full"] }
+xml-rs = "0.8.28"
