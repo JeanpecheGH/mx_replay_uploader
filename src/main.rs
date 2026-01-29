@@ -1,12 +1,10 @@
 mod app;
-mod dialog;
 mod gbx_parser;
 mod mx_client;
 mod pref;
 mod watcher;
 
 use crate::app::ReplayUploaderApp;
-use crate::mx_client::MxClient;
 use crate::pref::Pref;
 use eframe::{NativeOptions, egui};
 use egui::{IconData, Vec2, ViewportBuilder};
@@ -18,20 +16,14 @@ const VEC2_SIZE: Vec2 = Vec2 {
     x: WIDTH,
     y: HEIGHT,
 };
-const TITLE_SUCCESS: &str = "✅ Success";
-const TITLE_ERROR: &str = "⚠ Error";
 
-//#[tokio::main]
-fn main() -> eframe::Result {
-    //async fn main() {
+#[tokio::main]
+async fn main() -> eframe::Result {
     let prefs = pref::load_pref().unwrap_or_else(|e| {
         eprintln!("Error loading preferences : {}", e);
         Pref::default()
     });
-    let c = MxClient::build_mx_client();
-    c.authenticate(&prefs.username, &prefs.password);
-    let _ = c.get_account();
-    let app = ReplayUploaderApp::with_pref_and_client(prefs, c);
+    let app = ReplayUploaderApp::with_pref(prefs);
 
     //Include the icon directly into the binary
     let icon_bytes = include_bytes!("..\\media\\icon-128.png");
@@ -53,7 +45,6 @@ fn main() -> eframe::Result {
         viewport,
         ..NativeOptions::default()
     };
-    app.watch_folder();
     eframe::run_native(
         "ManiaExchange Replay Uploader",
         options,

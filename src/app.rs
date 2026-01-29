@@ -1,28 +1,33 @@
-use crate::dialog::Dialog;
+mod frame;
+
+use crate::app::frame::State;
 use crate::gbx_parser::GbxHeader;
-use crate::mx_client::MxClient;
+use crate::mx_client::{ClientError, MxClient};
 use crate::pref::Pref;
-use crate::{pref, watcher};
+use crate::watcher;
 use eframe::emath::Align;
-use eframe::glow::Context;
 use egui::{Layout, RichText};
 use egui_extras::{Column, TableBody, TableBuilder};
+use poll_promise::Promise;
 use rfd::FileDialog;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 // We should have 1 reader (UI) and 1 writer (Event watcher) at anytime
 // Mutex is fine for this usage
 pub type ReplayMap = Arc<Mutex<HashMap<String, (GbxHeader, usize)>>>;
+pub type ConnectPromise = Rc<Promise<Result<(), ClientError>>>;
+pub type UploadPromise = Rc<Promise<Result<(), ClientError>>>;
 
 pub struct ReplayUploaderApp {
     replays: ReplayMap,
     username: String,
     password: String,
-    dialog: Dialog,
-    client: MxClient,
+    client: Arc<MxClient>,
     pref: Pref,
+    state: State,
 }
 
 impl ReplayUploaderApp {
@@ -37,7 +42,7 @@ impl ReplayUploaderApp {
     }
 
     pub fn watch_folder(&self) {
-        let path: String = self.pref.autosave_path.clone();
+        let path: String = self.pref.autosave_path.clone().unwrap();
         let replays: ReplayMap = self.replays.clone();
         let _ = thread::spawn(move || {
             let _ = watcher::watch_folder(&path, replays);
@@ -47,14 +52,140 @@ impl ReplayUploaderApp {
     fn pick_game_folder(&mut self) {
         if let Some(path) = Self::get_file_dialog().pick_folder() {
             let autosave_path = path.display().to_string();
-            self.pref.autosave_path = autosave_path.clone();
+            self.pref.autosave_path = Some(autosave_path.clone());
             self.watch_folder();
+            self.state = State::ListView;
         }
     }
 
     fn set_credentials(&mut self) {
-        self.pref.username = self.username.clone();
-        self.pref.password = self.password.clone();
+        self.pref.username = Some(self.username.clone());
+        self.pref.password = Some(self.password.clone());
+    }
+
+    fn connect(&mut self) {
+        let username: String = self.username.clone();
+        let password: String = self.password.clone();
+        let client: Arc<MxClient> = self.client.clone();
+        let promise =
+            Promise::spawn_async(async move { client.connect(&username, &password).await });
+        self.state = State::Connecting(Rc::new(promise));
+    }
+
+    fn upload_replays(&mut self) {
+        let mut replays = self
+            .replays
+            .lock()
+            .expect("Locking replays failed from upload");
+        let r: Vec<GbxHeader> = replays.values().map(|(h, _)| h).cloned().collect();
+        let client: Arc<MxClient> = self.client.clone();
+        let promise: Promise<Result<(), ClientError>> = Promise::spawn_async(async move {
+            for gbx in r {
+                if let Some(id) = client.get_map_id(gbx.uid()).await.unwrap() {
+                    println!("Uploading replay {} {} {}", gbx.name(), gbx.uid(), id);
+                    match client.upload_replay(&gbx.path, id).await {
+                        Ok(_) => println!("Upload sucessful!"),
+                        Err(e) => println!("Upload failed {:?}", e),
+                    }
+                } else {
+                    println!("Map {} does not exist on Mania Exchange", gbx.name())
+                }
+            }
+            Ok(())
+        });
+        replays.clear();
+        self.state = State::Uploading(Rc::new(promise));
+    }
+
+    pub fn with_pref(pref: Pref) -> Self {
+        let client = MxClient::build_mx_client().unwrap();
+        Self {
+            replays: Arc::new(Mutex::new(HashMap::new())),
+            username: pref.username.clone().unwrap_or_default(),
+            password: pref.password.clone().unwrap_or_default(),
+            client: Arc::new(client),
+            pref,
+            state: State::Credentials(false, None),
+        }
+    }
+
+    /// !!!!!!!!!!!!!!!!! ///
+    /// Display functions ///
+    /// !!!!!!!!!!!!!!!!! ///
+    fn login_form(&mut self, ctx: &egui::Context, forced: bool, error: Option<&String>) {
+        if forced || error.is_some() || self.pref.username.is_none() || self.pref.password.is_none()
+        {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label("");
+                    ui.label("Please set your ManiaExchange username and password.");
+                    ui.label("");
+                    ui.add(egui::TextEdit::singleline(&mut self.username).hint_text("Username"));
+                    ui.label("");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.password)
+                            .hint_text("Password")
+                            .password(true),
+                    );
+                    ui.label("");
+                    if ui.button("Set credentials").clicked() {
+                        self.set_credentials();
+                        self.connect();
+                        ctx.request_repaint();
+                    }
+                });
+            });
+        } else {
+            self.connect();
+            ctx.request_repaint();
+        }
+    }
+
+    fn wait_login(&mut self, ctx: &egui::Context, promise: &ConnectPromise) {
+        if let Some(result) = promise.ready() {
+            match result {
+                Ok(()) => {
+                    self.state = State::ReplayFolder(false, None);
+                    ctx.request_repaint();
+                }
+                Err(ClientError::Error(s)) => {
+                    println!("{:?}", s);
+                    self.state = State::Credentials(
+                        false,
+                        Some("Error connecting to Mania Exchange".to_string()),
+                    );
+                    ctx.request_repaint();
+                }
+            }
+        } else {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label("Connecting to Mania Exchange");
+                ui.spinner();
+            });
+        }
+    }
+
+    fn folder_form(&mut self, ctx: &egui::Context, forced: bool, error: Option<&String>) {
+        if forced || error.is_some() || self.pref.autosave_path.is_none() {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label("");
+                    ui.label("The autosave path is not defined.");
+                    ui.label("");
+                    ui.label("Please select the folder where your replays are saved.");
+                    ui.label("");
+                    ui.label("Ex: \"../ManiaPlanet/DonneesPerso/Replays/Autosaves\"");
+                    ui.label("");
+                    if ui.button("Select autosave folder").clicked() {
+                        self.pick_game_folder();
+                    }
+                });
+            });
+        } else {
+            self.watch_folder();
+            self.state = State::ListView;
+            ctx.request_repaint();
+        }
     }
 
     fn populate_table(&mut self, body: &mut TableBody) {
@@ -82,122 +213,69 @@ impl ReplayUploaderApp {
         }
     }
 
-    fn upload_replays(&self) {
-        let mut replays = self
-            .replays
-            .lock()
-            .expect("Locking replays failed from upload");
-        for (_, (gbx, _)) in replays.iter() {
-            if let Some(id) = self.client.get_map_id(gbx.uid()).unwrap() {
-                println!("Uploading replay {} {} {}", gbx.name(), gbx.uid(), id);
-                match self.client.upload_replay(&gbx.path, id) {
-                    Ok(_) => println!("Upload sucessful!"),
-                    Err(e) => println!("Upload failed {}", e),
-                }
-            } else {
-                println!("Map {} does not exist on ManiaEchange", gbx.name())
-            }
-        }
-        replays.clear();
-    }
+    fn list_view(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::right("right panel")
+            .exact_width(200.0)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+                    ui.label("");
+                    ui.label("");
+                    if ui
+                        .button(RichText::from("Upload all").heading().strong())
+                        .clicked()
+                    {
+                        self.upload_replays();
+                        ctx.request_repaint();
+                    }
+                });
+            });
 
-    pub fn with_pref_and_client(pref: Pref, client: MxClient) -> Self {
-        Self {
-            replays: Arc::new(Mutex::new(HashMap::new())),
-            username: pref.username.clone(),
-            password: pref.password.clone(),
-            dialog: Dialog::default(),
-            client,
-            pref,
-        }
-    }
-}
-
-impl eframe::App for ReplayUploaderApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            // When showing a dialog, disable the whole UI underneath
-            if self.dialog.show {
-                ui.disable();
-            }
-
-            if self.pref.autosave_path.is_empty() {
-                ui.vertical_centered(|ui| {
-                    ui.label("");
-                    ui.label("The autosave path is not defined.");
-                    ui.label("");
-                    ui.label("Please select the folder where your replays are saved.");
-                    ui.label("");
-                    ui.label("Ex: \"../ManiaPlanet/DonneesPerso/Replays/Autosaves\"");
-                    ui.label("");
-                    if ui.button("Select autosave folder").clicked() {
-                        self.pick_game_folder();
-                    }
-                });
-            } else if self.pref.username.is_empty() || self.pref.password.is_empty() {
-                ui.vertical_centered(|ui| {
-                    ui.label("");
-                    ui.label("ManiaExchange username and/or password are not defined.");
-                    ui.label("");
-                    ui.add(egui::TextEdit::singleline(&mut self.username).hint_text("Username"));
-                    ui.label("");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.password)
-                            .hint_text("Password")
-                            .password(true),
-                    );
-                    ui.label("");
-                    if ui.button("Set credentials").clicked() {
-                        self.set_credentials();
-                    }
-                });
-            } else {
-                egui::SidePanel::right("right panel")
-                    .resizable(false)
-                    .show_inside(ui, |ui| {
-                        ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-                            ui.label("");
-                            ui.label("");
-                            if ui
-                                .button(RichText::from("Upload all").heading().strong())
-                                .clicked()
-                            {
-                                self.upload_replays();
-                            }
+            ui.vertical(|ui| {
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .column(Column::remainder().at_least(200.0))
+                    .column(Column::auto().at_least(200.0))
+                    .column(Column::exact(150.0))
+                    //Without this, end of line start disappearing to right when resizing (default top_down is wrong)
+                    .cell_layout(Layout::left_to_right(Align::Center))
+                    .header(30.0, |mut header| {
+                        header.col(|ui| {
+                            ui.label(RichText::from("Map Name").heading().strong());
                         });
+                        header.col(|ui| {
+                            ui.label(RichText::from("Author").heading().strong());
+                        });
+                        header.col(|ui| {
+                            ui.label(RichText::from("Time").heading().strong());
+                        });
+                    })
+                    .body(|mut body| {
+                        self.populate_table(&mut body);
                     });
-                ui.vertical(|ui| {
-                    TableBuilder::new(ui)
-                        .striped(true)
-                        .column(Column::remainder().at_least(200.0))
-                        .column(Column::auto().at_least(200.0))
-                        .column(Column::exact(150.0))
-                        //Without this, end of line start disappearing to right when resizing (default top_down is wrong)
-                        .cell_layout(Layout::left_to_right(Align::Center))
-                        .header(30.0, |mut header| {
-                            header.col(|ui| {
-                                ui.label(RichText::from("Map Name").heading().strong());
-                            });
-                            header.col(|ui| {
-                                ui.label(RichText::from("Author").heading().strong());
-                            });
-                            header.col(|ui| {
-                                ui.label(RichText::from("Time").heading().strong());
-                            });
-                        })
-                        .body(|mut body| {
-                            self.populate_table(&mut body);
-                        });
-                });
-            }
+            });
         });
     }
 
-    fn on_exit(&mut self, _gl: Option<&Context>) {
-        self.upload_replays();
-        match pref::save_pref(&self.pref) {
-            Ok(()) => println!("Preferences successfully saved"),
-            Err(e) => println!("Error saving pref: {}", e),
+    fn wait_upload(&mut self, ctx: &egui::Context, promise: &UploadPromise) {
+        if let Some(result) = promise.ready() {
+            match result {
+                Ok(()) => {
+                    self.state = State::ListView;
+                    ctx.request_repaint();
+                }
+                Err(error) => {
+                    println!("{error:?}");
+                    self.state = State::ListView;
+                    ctx.request_repaint();
+                }
+            }
+        } else {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label("Uploading replays to Mania Exchange");
+                ui.spinner();
+            });
         }
     }
 }

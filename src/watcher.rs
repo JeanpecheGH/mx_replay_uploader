@@ -16,7 +16,8 @@ pub fn watch_folder(path: &str, replays: ReplayMap) -> Result<()> {
 
     // Add a path to be watched. All files and directories at that path and
     // below will be monitored for changes.
-    watcher.watch(Path::new(path), RecursiveMode::Recursive)?;
+    watcher.watch(Path::new(path), RecursiveMode::NonRecursive)?;
+    println!("Watching {:?} for new replays...", path);
 
     // Block forever, treat events as they come in
     for res in rx {
