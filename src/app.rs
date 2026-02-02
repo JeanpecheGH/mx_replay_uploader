@@ -77,24 +77,26 @@ impl ReplayUploaderApp {
             .replays
             .lock()
             .expect("Locking replays failed from upload");
-        let r: Vec<GbxHeader> = replays.values().map(|(h, _)| h).cloned().collect();
-        let client: Arc<MxClient> = self.client.clone();
-        let promise: Promise<Result<(), ClientError>> = Promise::spawn_async(async move {
-            for gbx in r {
-                if let Some(id) = client.get_map_id(gbx.uid()).await.unwrap() {
-                    println!("Uploading replay {} {} {}", gbx.name(), gbx.uid(), id);
-                    match client.upload_replay(&gbx.path, id).await {
-                        Ok(_) => println!("Upload sucessful!"),
-                        Err(e) => println!("Upload failed {:?}", e),
+        if !replays.is_empty() {
+            let r: Vec<GbxHeader> = replays.values().map(|(h, _)| h).cloned().collect();
+            let client: Arc<MxClient> = self.client.clone();
+            let promise: Promise<Result<(), ClientError>> = Promise::spawn_async(async move {
+                for gbx in r {
+                    if let Some(id) = client.get_map_id(gbx.uid()).await.unwrap() {
+                        println!("Uploading replay {} {} {}", gbx.name(), gbx.uid(), id);
+                        match client.upload_replay(&gbx.path, id).await {
+                            Ok(_) => println!("Upload sucessful!"),
+                            Err(e) => println!("Upload failed {:?}", e),
+                        }
+                    } else {
+                        println!("Map {} does not exist on Mania Exchange", gbx.name())
                     }
-                } else {
-                    println!("Map {} does not exist on Mania Exchange", gbx.name())
                 }
-            }
-            Ok(())
-        });
-        replays.clear();
-        self.state = State::Uploading(Rc::new(promise));
+                Ok(())
+            });
+            replays.clear();
+            self.state = State::Uploading(Rc::new(promise));
+        }
     }
 
     pub fn with_pref(pref: Pref) -> Self {
@@ -112,6 +114,14 @@ impl ReplayUploaderApp {
     /// !!!!!!!!!!!!!!!!! ///
     /// Display functions ///
     /// !!!!!!!!!!!!!!!!! ///
+
+    fn wait_login_spinner(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.label("Connecting to Mania Exchange");
+            ui.spinner();
+        });
+    }
+
     fn login_form(&mut self, ctx: &egui::Context, forced: bool, error: Option<&String>) {
         if forced || error.is_some() || self.pref.username.is_none() || self.pref.password.is_none()
         {
@@ -131,13 +141,14 @@ impl ReplayUploaderApp {
                     if ui.button("Set credentials").clicked() {
                         self.set_credentials();
                         self.connect();
-                        ctx.request_repaint();
                     }
                 });
             });
         } else {
             self.connect();
-            ctx.request_repaint();
+            // We have to draw something every frame,
+            // Start the spinner now
+            self.wait_login_spinner(ctx);
         }
     }
 
@@ -146,7 +157,6 @@ impl ReplayUploaderApp {
             match result {
                 Ok(()) => {
                     self.state = State::ReplayFolder(false, None);
-                    ctx.request_repaint();
                 }
                 Err(ClientError::Error(s)) => {
                     println!("{:?}", s);
@@ -154,15 +164,11 @@ impl ReplayUploaderApp {
                         false,
                         Some("Error connecting to Mania Exchange".to_string()),
                     );
-                    ctx.request_repaint();
                 }
             }
-        } else {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.label("Connecting to Mania Exchange");
-                ui.spinner();
-            });
         }
+        // Draw waiting panel in all cases
+        self.wait_login_spinner(ctx);
     }
 
     fn folder_form(&mut self, ctx: &egui::Context, forced: bool, error: Option<&String>) {
@@ -184,7 +190,8 @@ impl ReplayUploaderApp {
         } else {
             self.watch_folder();
             self.state = State::ListView;
-            ctx.request_repaint();
+            // Already show list view in advance
+            self.list_view(ctx);
         }
     }
 
@@ -226,7 +233,6 @@ impl ReplayUploaderApp {
                         .clicked()
                     {
                         self.upload_replays();
-                        ctx.request_repaint();
                     }
                 });
             });
@@ -263,19 +269,17 @@ impl ReplayUploaderApp {
             match result {
                 Ok(()) => {
                     self.state = State::ListView;
-                    ctx.request_repaint();
                 }
                 Err(error) => {
                     println!("{error:?}");
                     self.state = State::ListView;
-                    ctx.request_repaint();
                 }
             }
-        } else {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.label("Uploading replays to Mania Exchange");
-                ui.spinner();
-            });
         }
+        // Draw waiting panel in all cases
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.label("Uploading replays to Mania Exchange");
+            ui.spinner();
+        });
     }
 }
