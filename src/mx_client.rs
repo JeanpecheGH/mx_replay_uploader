@@ -1,3 +1,9 @@
+pub mod client_error;
+pub mod upload_response;
+
+use crate::gbx_parser::GbxHeader;
+use crate::mx_client::client_error::ClientError;
+use crate::mx_client::upload_response::UploadResponse;
 use reqwest::Client;
 use reqwest::header;
 use reqwest::multipart::Form;
@@ -24,13 +30,9 @@ impl MapFromUid {
     }
 }
 
+#[derive(Clone)]
 pub struct MxClient {
     client: Client,
-}
-
-#[derive(Debug)]
-pub enum ClientError {
-    Error(String),
 }
 
 impl MxClient {
@@ -58,7 +60,7 @@ impl MxClient {
 
         // Select hidden inputs within forms
         let selector = Selector::parse(r#"form[method="post"]"#)
-            .map_err(|e| ClientError::Error(e.to_string()))?;
+            .map_err(|e| ClientError::HtmlParse(e.to_string()))?;
 
         if let Some(element) = document.select(&selector).next() {
             Ok(element.value().attr("action").map(|s| s.to_string()))
@@ -73,7 +75,7 @@ impl MxClient {
 
         // Select hidden inputs within forms
         let selector = Selector::parse(r#"form input[type="hidden"]"#)
-            .map_err(|e| ClientError::Error(e.to_string()))?;
+            .map_err(|e| ClientError::HtmlParse(e.to_string()))?;
 
         let mut fields = HashMap::new();
 
@@ -95,11 +97,8 @@ impl MxClient {
             .get("https://account.mania.exchange/login")
             .send()
             .await
-            .map_err(|e| ClientError::Error(e.to_string()))?;
-        let text = response
-            .text()
-            .await
-            .map_err(|e| ClientError::Error(e.to_string()))?;
+            .map_err(ClientError::Reqwest)?;
+        let text = response.text().await.map_err(ClientError::Reqwest)?;
 
         let mut params = self.extract_hidden_fields(&text)?;
         params.insert(String::from("Username"), String::from(user));
@@ -114,18 +113,14 @@ impl MxClient {
             .header(header::ORIGIN, "null")
             .send()
             .await
-            .map_err(|e| ClientError::Error(e.to_string()))?;
-        let mut text = response
-            .text()
-            .await
-            .map_err(|e| ClientError::Error(e.to_string()))?;
+            .map_err(ClientError::Reqwest)?;
+        let mut text = response.text().await.map_err(ClientError::Reqwest)?;
         let mut previous: String = "https://account.mania.exchange/login".to_string();
 
         // Chain of POST pseudo redirects
         // While we get action=next_url
         // Get hidden token & fdata form values
         while let Ok(Some(action)) = self.extract_next_action(&text) {
-            println!("Action: {:?}", action);
             let params = self.extract_hidden_fields(&text)?;
             text = self
                 .client
@@ -134,10 +129,10 @@ impl MxClient {
                 .header(header::ORIGIN, previous)
                 .send()
                 .await
-                .map_err(|e| ClientError::Error(e.to_string()))?
+                .map_err(ClientError::Reqwest)?
                 .text()
                 .await
-                .map_err(|e| ClientError::Error(e.to_string()))?;
+                .map_err(ClientError::Reqwest)?;
             previous = action;
         }
 
@@ -150,15 +145,8 @@ impl MxClient {
             .get("https://tm.mania.exchange/login")
             .send()
             .await
-            .map_err(|e| ClientError::Error(e.to_string()))?;
-        println!(
-            "Mania-exchange login to https://tm.mania.exchange/login: {}",
-            response.status()
-        );
-        let text = response
-            .text()
-            .await
-            .map_err(|e| ClientError::Error(e.to_string()))?;
+            .map_err(ClientError::Reqwest)?;
+        let text = response.text().await.map_err(ClientError::Reqwest)?;
 
         if let Ok(Some(action)) = self.extract_next_action(&text) {
             let params = self.extract_hidden_fields(&text)?;
@@ -168,18 +156,14 @@ impl MxClient {
                 .form(&params)
                 .send()
                 .await
-                .map_err(|e| ClientError::Error(e.to_string()))?;
-            println!("Action {}: {}", action, response.status());
-            let _ = response
-                .text()
-                .await
-                .map_err(|e| ClientError::Error(e.to_string()))?;
+                .map_err(ClientError::Reqwest)?;
+            let _ = response.text().await.map_err(ClientError::Reqwest)?;
         }
 
         Ok(())
     }
 
-    pub async fn get_map_id(&self, uid: &str) -> Result<Option<usize>, ClientError> {
+    pub async fn get_map_id(&self, uid: &str) -> Result<usize, ClientError> {
         let url = "https://tm.mania.exchange/api/maps";
         let params = [("fields", "MapId"), ("uid", uid)];
         let url = reqwest::Url::parse_with_params(url, &params)
@@ -189,14 +173,18 @@ impl MxClient {
             .get(url)
             .send()
             .await
-            .map_err(|e| ClientError::Error(e.to_string()))?
+            .map_err(ClientError::Reqwest)?
             .json::<MapFromUid>()
             .await
-            .map_err(|e| ClientError::Error(e.to_string()))?;
-        Ok(json.id())
+            .map_err(ClientError::Reqwest)?;
+        json.id().ok_or(ClientError::NoMapId)
     }
 
-    pub async fn upload_replay(&self, path: &str, id: usize) -> Result<(), ClientError> {
+    pub async fn upload_replay(
+        &self,
+        path: &str,
+        id: usize,
+    ) -> Result<UploadResponse, ClientError> {
         let url = "https://tm.mania.exchange/api/replays/upload";
         let referer = format!("https://tm.mania.exchange/replayupload/{}", id);
 
@@ -205,34 +193,52 @@ impl MxClient {
             .get(referer.clone())
             .send()
             .await
-            .map_err(|e| ClientError::Error(e.to_string()))?;
-        println!("Get map {}: {}", referer, response.status());
-        let text = response
-            .text()
-            .await
-            .map_err(|e| ClientError::Error(e.to_string()))?;
+            .map_err(ClientError::Reqwest)?;
+        let text = response.text().await.map_err(ClientError::Reqwest)?;
 
         let params = self.extract_hidden_fields(&text)?;
-        let a: String = params.keys().next().unwrap().to_string();
-        let b: String = params.values().next().unwrap().to_string();
+        let (key, value) = params.into_iter().next().ok_or(ClientError::Error(format!(
+            "No hidden fields found in {referer} response"
+        )))?;
         let form = Form::new()
-            .text(a, b)
+            .text(key, value)
             .file("file", path)
             .await
             .map_err(|e| ClientError::Error(e.to_string()))?;
-        let response = self
-            .client
+        self.client
             .post(url)
             .multipart(form)
             .header(header::REFERER, referer) // Some sites check referer
             .header(header::ORIGIN, "tm.mania.exchange")
             .send()
             .await
-            .map_err(|e| ClientError::Error(e.to_string()))?
-            .text()
+            .map_err(ClientError::Reqwest)?
+            .json::<UploadResponse>()
             .await
-            .map_err(|e| ClientError::Error(e.to_string()))?;
-        println!("Response POST: {:?}", response);
-        Ok(())
+            .map_err(ClientError::Reqwest)
+    }
+
+    pub async fn upload_single(&self, replay: &GbxHeader) -> Result<UploadResponse, ClientError> {
+        let id = self.get_map_id(replay.uid()).await?;
+        let r = self.upload_replay(&replay.path, id).await?;
+        if r.success {
+            Ok(r)
+        } else {
+            Err(ClientError::Upload(
+                r.error.unwrap_or(String::from("No error message")),
+            ))
+        }
+    }
+
+    pub async fn upload_all(
+        &self,
+        replays: Vec<GbxHeader>,
+    ) -> Vec<(Result<UploadResponse, ClientError>, GbxHeader)> {
+        let mut results: Vec<(Result<UploadResponse, ClientError>, GbxHeader)> = Vec::new();
+        for r in replays {
+            let res = self.upload_single(&r).await;
+            results.push((res, r));
+        }
+        results
     }
 }

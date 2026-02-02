@@ -2,7 +2,10 @@ mod frame;
 
 use crate::app::frame::State;
 use crate::gbx_parser::GbxHeader;
-use crate::mx_client::{ClientError, MxClient};
+use crate::logs::{Log, LogKind};
+use crate::mx_client::MxClient;
+use crate::mx_client::client_error::ClientError;
+use crate::mx_client::upload_response::UploadResponse;
 use crate::pref::Pref;
 use crate::watcher;
 use eframe::emath::Align;
@@ -19,13 +22,14 @@ use std::thread;
 // Mutex is fine for this usage
 pub type ReplayMap = Arc<Mutex<HashMap<String, (GbxHeader, usize)>>>;
 pub type ConnectPromise = Rc<Promise<Result<(), ClientError>>>;
-pub type UploadPromise = Rc<Promise<Result<(), ClientError>>>;
+pub type UploadPromise = Rc<Promise<Vec<(Result<UploadResponse, ClientError>, GbxHeader)>>>;
 
 pub struct ReplayUploaderApp {
     replays: ReplayMap,
     username: String,
     password: String,
-    client: Arc<MxClient>,
+    client: MxClient,
+    logs: Vec<Log>,
     pref: Pref,
     state: State,
 }
@@ -66,7 +70,7 @@ impl ReplayUploaderApp {
     fn connect(&mut self) {
         let username: String = self.username.clone();
         let password: String = self.password.clone();
-        let client: Arc<MxClient> = self.client.clone();
+        let client: MxClient = self.client.clone();
         let promise =
             Promise::spawn_async(async move { client.connect(&username, &password).await });
         self.state = State::Connecting(Rc::new(promise));
@@ -79,33 +83,28 @@ impl ReplayUploaderApp {
             .expect("Locking replays failed from upload");
         if !replays.is_empty() {
             let r: Vec<GbxHeader> = replays.values().map(|(h, _)| h).cloned().collect();
-            let client: Arc<MxClient> = self.client.clone();
-            let promise: Promise<Result<(), ClientError>> = Promise::spawn_async(async move {
-                for gbx in r {
-                    if let Some(id) = client.get_map_id(gbx.uid()).await.unwrap() {
-                        println!("Uploading replay {} {} {}", gbx.name(), gbx.uid(), id);
-                        match client.upload_replay(&gbx.path, id).await {
-                            Ok(_) => println!("Upload sucessful!"),
-                            Err(e) => println!("Upload failed {:?}", e),
-                        }
-                    } else {
-                        println!("Map {} does not exist on Mania Exchange", gbx.name())
-                    }
-                }
-                Ok(())
-            });
+            let client: MxClient = self.client.clone();
+            let promise: Promise<Vec<(Result<UploadResponse, ClientError>, GbxHeader)>> =
+                Promise::spawn_async(async move { client.upload_all(r).await });
             replays.clear();
             self.state = State::Uploading(Rc::new(promise));
         }
     }
 
+    fn log(&mut self, kind: LogKind, value: String) {
+        let log = Log { kind, value };
+        println!("{log}");
+        self.logs.push(log);
+    }
+
     pub fn with_pref(pref: Pref) -> Self {
-        let client = MxClient::build_mx_client().unwrap();
+        let client: MxClient = MxClient::build_mx_client().unwrap();
         Self {
             replays: Arc::new(Mutex::new(HashMap::new())),
             username: pref.username.clone().unwrap_or_default(),
             password: pref.password.clone().unwrap_or_default(),
-            client: Arc::new(client),
+            client,
+            logs: Vec::new(),
             pref,
             state: State::Credentials(false, None),
         }
@@ -114,7 +113,6 @@ impl ReplayUploaderApp {
     /// !!!!!!!!!!!!!!!!! ///
     /// Display functions ///
     /// !!!!!!!!!!!!!!!!! ///
-
     fn wait_login_spinner(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label("Connecting to Mania Exchange");
@@ -157,12 +155,16 @@ impl ReplayUploaderApp {
             match result {
                 Ok(()) => {
                     self.state = State::ReplayFolder(false, None);
+                    self.log(LogKind::Client, "Connected to Mania Exchange".to_string());
                 }
-                Err(ClientError::Error(s)) => {
-                    println!("{:?}", s);
+                Err(e) => {
                     self.state = State::Credentials(
                         false,
                         Some("Error connecting to Mania Exchange".to_string()),
+                    );
+                    self.log(
+                        LogKind::Client,
+                        format!("Error connecting to Mania Exchange: {e}"),
                     );
                 }
             }
@@ -222,7 +224,7 @@ impl ReplayUploaderApp {
 
     fn list_view(&mut self, ctx: &egui::Context) {
         egui::SidePanel::right("right panel")
-            .exact_width(200.0)
+            .exact_width(150.0)
             .resizable(false)
             .show(ctx, |ui| {
                 ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
@@ -242,7 +244,7 @@ impl ReplayUploaderApp {
                 TableBuilder::new(ui)
                     .striped(true)
                     .column(Column::remainder().at_least(200.0))
-                    .column(Column::auto().at_least(200.0))
+                    .column(Column::auto().at_least(150.0))
                     .column(Column::exact(150.0))
                     //Without this, end of line start disappearing to right when resizing (default top_down is wrong)
                     .cell_layout(Layout::left_to_right(Align::Center))
@@ -266,15 +268,23 @@ impl ReplayUploaderApp {
 
     fn wait_upload(&mut self, ctx: &egui::Context, promise: &UploadPromise) {
         if let Some(result) = promise.ready() {
-            match result {
-                Ok(()) => {
-                    self.state = State::ListView;
-                }
-                Err(error) => {
-                    println!("{error:?}");
-                    self.state = State::ListView;
+            for (r, hdr) in result {
+                match r {
+                    Ok(resp) => {
+                        self.log(
+                            LogKind::Upload,
+                            format!("Map {} uploaded, new rank {}", hdr.name(), resp.position()),
+                        );
+                    }
+                    Err(error) => {
+                        self.log(
+                            LogKind::Upload,
+                            format!("Map {} not uploaded : {error}", hdr.name()),
+                        );
+                    }
                 }
             }
+            self.state = State::ListView;
         }
         // Draw waiting panel in all cases
         egui::CentralPanel::default().show(ctx, |ui| {

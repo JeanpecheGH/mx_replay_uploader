@@ -1,5 +1,6 @@
 mod app;
 mod gbx_parser;
+mod logs;
 mod mx_client;
 mod pref;
 mod watcher;
