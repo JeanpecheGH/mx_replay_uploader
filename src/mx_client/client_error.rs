@@ -16,7 +16,7 @@ impl Display for ClientError {
             ClientError::Upload(e) => write!(f, "Upload error: {}", e),
             ClientError::Reqwest(e) => write!(f, "Reqwest error: {}", e),
             ClientError::HtmlParse(e) => write!(f, "Html parse error: {}", e),
-            ClientError::NoMapId => write!(f, "Map does not exist on Mania Exchange"),
+            ClientError::NoMapId => write!(f, "Map does not exist on ManiaExchange"),
         }
     }
 }

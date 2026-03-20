@@ -9,7 +9,7 @@ use crate::mx_client::upload_response::UploadResponse;
 use crate::pref::Pref;
 use crate::watcher;
 use eframe::emath::Align;
-use egui::{Layout, RichText};
+use egui::{Layout, RichText, Spinner};
 use egui_extras::{Column, TableBody, TableBuilder};
 use poll_promise::Promise;
 use rfd::FileDialog;
@@ -113,10 +113,15 @@ impl ReplayUploaderApp {
     /// !!!!!!!!!!!!!!!!! ///
     /// Display functions ///
     /// !!!!!!!!!!!!!!!!! ///
-    fn wait_login_spinner(&mut self, ctx: &egui::Context) {
+    fn wait_spinner(&mut self, ctx: &egui::Context, text: &str) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.label("Connecting to Mania Exchange");
-            ui.spinner();
+            ui.vertical_centered(|ui| {
+                let height: f32 = ui.max_rect().height();
+                ui.add_space(height / 5.0);
+                ui.label(RichText::from(text).heading().strong());
+                ui.add_space(height / 5.0);
+                ui.add(Spinner::new().size(60.0))
+            });
         });
     }
 
@@ -146,7 +151,7 @@ impl ReplayUploaderApp {
             self.connect();
             // We have to draw something every frame,
             // Start the spinner now
-            self.wait_login_spinner(ctx);
+            self.wait_spinner(ctx, "Connecting to ManiaExchange");
         }
     }
 
@@ -155,22 +160,22 @@ impl ReplayUploaderApp {
             match result {
                 Ok(()) => {
                     self.state = State::ReplayFolder(false, None);
-                    self.log(LogKind::Client, "Connected to Mania Exchange".to_string());
+                    self.log(LogKind::Client, "Connected to ManiaExchange".to_string());
                 }
                 Err(e) => {
                     self.state = State::Credentials(
                         false,
-                        Some("Error connecting to Mania Exchange".to_string()),
+                        Some("Error connecting to ManiaExchange".to_string()),
                     );
                     self.log(
                         LogKind::Client,
-                        format!("Error connecting to Mania Exchange: {e}"),
+                        format!("Error connecting to ManiaExchange: {e}"),
                     );
                 }
             }
         }
         // Draw waiting panel in all cases
-        self.wait_login_spinner(ctx);
+        self.wait_spinner(ctx, "Connecting to ManiaExchange");
     }
 
     fn folder_form(&mut self, ctx: &egui::Context, forced: bool, error: Option<&String>) {
@@ -287,9 +292,6 @@ impl ReplayUploaderApp {
             self.state = State::ListView;
         }
         // Draw waiting panel in all cases
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.label("Uploading replays to Mania Exchange");
-            ui.spinner();
-        });
+        self.wait_spinner(ctx, "Uploading replays to ManiaExchange")
     }
 }
