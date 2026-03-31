@@ -10,7 +10,7 @@ use crate::pref::Pref;
 use crate::watcher;
 use eframe::emath::Align;
 use egui::{Layout, RichText, Spinner};
-use egui_extras::{Column, TableBody, TableBuilder};
+use egui_extras::{Column, TableBuilder};
 use poll_promise::Promise;
 use rfd::FileDialog;
 use std::collections::HashMap;
@@ -202,31 +202,6 @@ impl ReplayUploaderApp {
         }
     }
 
-    fn populate_table(&mut self, body: &mut TableBody) {
-        let replays = self.replays.lock().expect("Locking replays failed from UI");
-        let mut headers: Vec<(GbxHeader, usize)> = replays.values().cloned().collect();
-        headers.sort_by(|(_, a), (_, b)| a.cmp(b));
-        for (hdr, _) in headers {
-            body.row(30.0, |mut row| {
-                row.col(|ui| {
-                    ui.horizontal_centered(|ui| {
-                        ui.label(hdr.name());
-                    });
-                });
-                row.col(|ui| {
-                    ui.horizontal_centered(|ui| {
-                        ui.label(hdr.author());
-                    });
-                });
-                row.col(|ui| {
-                    ui.horizontal_centered(|ui| {
-                        ui.label(hdr.time());
-                    });
-                });
-            });
-        }
-    }
-
     fn list_view(&mut self, ctx: &egui::Context) {
         egui::SidePanel::right("right panel")
             .exact_width(150.0)
@@ -245,29 +220,69 @@ impl ReplayUploaderApp {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.vertical(|ui| {
-                TableBuilder::new(ui)
-                    .striped(true)
-                    .column(Column::remainder().at_least(200.0))
-                    .column(Column::auto().at_least(150.0))
-                    .column(Column::exact(150.0))
-                    //Without this, end of line start disappearing to right when resizing (default top_down is wrong)
-                    .cell_layout(Layout::left_to_right(Align::Center))
-                    .header(30.0, |mut header| {
-                        header.col(|ui| {
-                            ui.label(RichText::from("Map Name").heading().strong());
+            let replays = self.replays.lock().expect("Locking replays failed from UI");
+            if replays.is_empty() {
+                // Waiting message
+                ui.vertical_centered(|ui| {
+                    let height: f32 = ui.max_rect().height();
+                    ui.add_space(height / 4.0);
+                    ui.label(RichText::from("Waiting for new replays").heading().strong());
+                    ui.add_space(height / 6.0);
+                    let folder: String = format!(
+                        "Watching \"{}\"",
+                        self.pref
+                            .autosave_path
+                            .clone()
+                            .unwrap_or("Not set".to_string())
+                    );
+                    ui.label(folder);
+                });
+            } else {
+                ui.vertical(|ui| {
+                    TableBuilder::new(ui)
+                        .striped(true)
+                        .column(Column::remainder().at_least(200.0))
+                        .column(Column::auto().at_least(150.0))
+                        .column(Column::exact(150.0))
+                        //Without this, end of line start disappearing to right when resizing (default top_down is wrong)
+                        .cell_layout(Layout::left_to_right(Align::Center))
+                        .header(30.0, |mut header| {
+                            header.col(|ui| {
+                                ui.label(RichText::from("Map Name").heading().strong());
+                            });
+                            header.col(|ui| {
+                                ui.label(RichText::from("Author").heading().strong());
+                            });
+                            header.col(|ui| {
+                                ui.label(RichText::from("Time").heading().strong());
+                            });
+                        })
+                        .body(|mut body| {
+                            let mut headers: Vec<(GbxHeader, usize)> =
+                                replays.values().cloned().collect();
+                            headers.sort_by(|(_, a), (_, b)| a.cmp(b));
+                            for (hdr, _) in headers {
+                                body.row(30.0, |mut row| {
+                                    row.col(|ui| {
+                                        ui.horizontal_centered(|ui| {
+                                            ui.label(hdr.name());
+                                        });
+                                    });
+                                    row.col(|ui| {
+                                        ui.horizontal_centered(|ui| {
+                                            ui.label(hdr.author());
+                                        });
+                                    });
+                                    row.col(|ui| {
+                                        ui.horizontal_centered(|ui| {
+                                            ui.label(hdr.time());
+                                        });
+                                    });
+                                });
+                            }
                         });
-                        header.col(|ui| {
-                            ui.label(RichText::from("Author").heading().strong());
-                        });
-                        header.col(|ui| {
-                            ui.label(RichText::from("Time").heading().strong());
-                        });
-                    })
-                    .body(|mut body| {
-                        self.populate_table(&mut body);
-                    });
-            });
+                });
+            }
         });
     }
 
