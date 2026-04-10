@@ -1,7 +1,7 @@
 mod frame;
 
 use crate::app::frame::State;
-use crate::gbx_parser::GbxHeader;
+use crate::gbx_parser::{GbxHeader, parse_from_file};
 use crate::logs::{Log, LogKind};
 use crate::mx_client::MxClient;
 use crate::mx_client::client_error::ClientError;
@@ -11,16 +11,20 @@ use crate::watcher;
 use eframe::emath::Align;
 use egui::{Layout, RichText, Spinner};
 use egui_extras::{Column, TableBuilder};
+use notify::event::ModifyKind::Name;
+use notify::{Event, EventKind};
 use poll_promise::Promise;
 use rfd::FileDialog;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Mutex, mpsc};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // We should have 1 reader (UI) and 1 writer (Event watcher) at anytime
 // Mutex is fine for this usage
-pub type ReplayMap = Arc<Mutex<HashMap<String, (GbxHeader, usize)>>>;
+pub type ReplayMap = Mutex<HashMap<String, (GbxHeader, usize)>>;
 pub type ConnectPromise = Rc<Promise<Result<(), ClientError>>>;
 pub type UploadPromise = Rc<Promise<Vec<(Result<UploadResponse, ClientError>, GbxHeader)>>>;
 
@@ -29,6 +33,8 @@ pub struct ReplayUploaderApp {
     username: String,
     password: String,
     client: MxClient,
+    sender: Sender<notify::Result<Event>>,
+    receiver: Receiver<notify::Result<Event>>,
     logs: Vec<Log>,
     pref: Pref,
     state: State,
@@ -45,12 +51,53 @@ impl ReplayUploaderApp {
         }
     }
 
-    pub fn watch_folder(&self) {
+    pub fn watch_folder(&mut self) {
         let path: String = self.pref.autosave_path.clone().unwrap();
-        let replays: ReplayMap = self.replays.clone();
+        let sender = self.sender.clone();
+
+        self.log(
+            LogKind::Watcher,
+            format!("Watching {} for new replays...", path),
+        );
+        //This thread loops indefinitely
         let _ = thread::spawn(move || {
-            let _ = watcher::watch_folder(&path, replays);
+            let _ = watcher::watch_folder(&path, sender);
         });
+    }
+
+    fn receive_event(&mut self) {
+        // Don't handle receiving errors for now
+        while let Ok(res) = self.receiver.try_recv() {
+            match res {
+                Ok(event) => {
+                    if let EventKind::Modify(Name(notify::event::RenameMode::To)) = event.kind
+                        && let Some(p) = event.paths.first()
+                        && p.to_str().unwrap().ends_with(".Gbx")
+                    {
+                        match parse_from_file(p.to_str().unwrap()) {
+                            Ok(hdr) => {
+                                self.log(
+                                    LogKind::Record,
+                                    format!("\"{}\" : {}", hdr.name(), hdr.time()),
+                                );
+                                let mut r = self
+                                    .replays
+                                    .lock()
+                                    .expect("Locking replays failed from watcher");
+                                let seconds: usize = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs()
+                                    as usize;
+                                let _ = r.insert(String::from(hdr.uid()), (hdr, seconds));
+                            }
+                            Err(e) => self.log(LogKind::Parser, format!("Error: {:?}", e)),
+                        }
+                    }
+                }
+                Err(e) => self.log(LogKind::Watcher, format!("Error: {:?}", e)),
+            }
+        }
     }
 
     fn pick_game_folder(&mut self) {
@@ -99,11 +146,14 @@ impl ReplayUploaderApp {
 
     pub fn with_pref(pref: Pref) -> Self {
         let client: MxClient = MxClient::build_mx_client().unwrap();
+        let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
         Self {
-            replays: Arc::new(Mutex::new(HashMap::new())),
+            replays: Mutex::new(HashMap::new()),
             username: pref.username.clone().unwrap_or_default(),
             password: pref.password.clone().unwrap_or_default(),
             client,
+            sender,
+            receiver,
             logs: Vec::new(),
             pref,
             state: State::Credentials(false, None),
@@ -293,13 +343,17 @@ impl ReplayUploaderApp {
                     Ok(resp) => {
                         self.log(
                             LogKind::Upload,
-                            format!("Map {} uploaded, new rank {}", hdr.name(), resp.position()),
+                            format!(
+                                "Replay on \"{}\" uploaded, new rank {}",
+                                hdr.name(),
+                                resp.position()
+                            ),
                         );
                     }
                     Err(error) => {
                         self.log(
                             LogKind::Upload,
-                            format!("Map {} not uploaded : {error}", hdr.name()),
+                            format!("Replay on \"{}\" not uploaded : {error}", hdr.name()),
                         );
                     }
                 }

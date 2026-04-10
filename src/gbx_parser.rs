@@ -2,6 +2,7 @@ mod replay_parser;
 
 use crate::gbx_parser::replay_parser::GbxReplayHeader;
 use std::convert::TryInto;
+use std::fmt::{Display, Formatter};
 use std::io;
 use std::io::Read;
 use std::{fs::File, num::ParseIntError};
@@ -19,15 +20,15 @@ pub enum ParseError {
     IO(io::Error),
 }
 
-impl ParseError {
-    pub fn display(&self) {
+impl Display for ParseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::MissingGBXMagic => println!("Missing GBX Magic"),
-            ParseError::FileTooShort => println!("File is too short"),
-            ParseError::HeaderNotFound => println!("Header not found"),
-            ParseError::XMLParse(e) => println!("XML parsing error: {e}"),
-            ParseError::HeaderValue(e) => println!("Header value error: {e}"),
-            ParseError::IO(e) => println!("IO error: {e}"),
+            ParseError::MissingGBXMagic => write!(f, "Missing GBX Magic"),
+            ParseError::FileTooShort => write!(f, "File is too short"),
+            ParseError::HeaderNotFound => write!(f, "Header not found"),
+            ParseError::XMLParse(e) => write!(f, "XML parsing error: {e}"),
+            ParseError::HeaderValue(e) => write!(f, "Header value error: {e}"),
+            ParseError::IO(e) => write!(f, "IO error: {e}"),
         }
     }
 }

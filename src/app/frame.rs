@@ -14,6 +14,9 @@ pub enum State {
 
 impl eframe::App for ReplayUploaderApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        // First, we read incoming events from the watcher
+        self.receive_event();
+
         let state = self.state.clone();
         match &state {
             State::Credentials(forced, error) => {

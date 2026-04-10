@@ -13,6 +13,7 @@ impl Display for Log {
 
 pub enum LogKind {
     Client,
+    Parser,
     Record,
     Upload,
     Watcher,
@@ -22,6 +23,7 @@ impl Display for LogKind {
     fn fmt(&self, f: &mut Formatter) -> Result {
         match self {
             LogKind::Client => write!(f, "Client"),
+            LogKind::Parser => write!(f, "Parser"),
             LogKind::Record => write!(f, "Record"),
             LogKind::Upload => write!(f, "Upload"),
             LogKind::Watcher => write!(f, "Watcher"),
