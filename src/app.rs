@@ -254,6 +254,8 @@ impl ReplayUploaderApp {
 
     fn nested_menus(&mut self, ui: &mut egui::Ui) {
         if ui.button("Set credentials").clicked() {
+            // Replace the previous client (we could log out instead ?)
+            self.client = MxClient::build_mx_client().unwrap();
             self.state = State::Credentials(true, None);
             ui.close();
         }
