@@ -252,14 +252,28 @@ impl ReplayUploaderApp {
         }
     }
 
+    fn nested_menus(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Set credentials").clicked() {
+            self.state = State::Credentials(true, None);
+            ui.close();
+        }
+        if ui.button("Set replay folder").clicked() {
+            self.state = State::ReplayFolder(true, None);
+            ui.close();
+        }
+        if ui.button("Show logs").clicked() {
+            self.state = State::LogView;
+            ui.close();
+        }
+    }
+
     fn list_view(&mut self, ctx: &egui::Context) {
         egui::SidePanel::right("right panel")
             .exact_width(150.0)
             .resizable(false)
             .show(ctx, |ui| {
                 ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-                    ui.label("");
-                    ui.label("");
+                    ui.add_space(40.0);
                     if ui
                         .button(RichText::from("Upload all").heading().strong())
                         .clicked()
@@ -270,6 +284,7 @@ impl ReplayUploaderApp {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            ui.menu_button("☰", |ui| self.nested_menus(ui));
             let replays = self.replays.lock().expect("Locking replays failed from UI");
             if replays.is_empty() {
                 // Waiting message
@@ -333,6 +348,58 @@ impl ReplayUploaderApp {
                         });
                 });
             }
+        });
+    }
+
+    fn log_view(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("bottom panel")
+            .exact_height(60.0)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(40.0);
+                    if ui
+                        .button(RichText::from("Return").heading().strong())
+                        .clicked()
+                    {
+                        self.state = State::ListView;
+                    }
+                });
+            });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical(|ui| {
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .column(Column::exact(80.0))
+                    .column(Column::remainder().at_least(200.0))
+                    //Without this, end of line start disappearing to right when resizing (default top_down is wrong)
+                    .cell_layout(Layout::left_to_right(Align::Center))
+                    .header(30.0, |mut header| {
+                        header.col(|ui| {
+                            ui.label(RichText::from("Kind").heading().strong());
+                        });
+                        header.col(|ui| {
+                            ui.label(RichText::from("Log").heading().strong());
+                        });
+                    })
+                    .body(|mut body| {
+                        for log in &self.logs {
+                            body.row(30.0, |mut row| {
+                                row.col(|ui| {
+                                    ui.horizontal_centered(|ui| {
+                                        ui.label(log.kind.to_string());
+                                    });
+                                });
+                                row.col(|ui| {
+                                    ui.horizontal_centered(|ui| {
+                                        ui.label(&log.value);
+                                    });
+                                });
+                            });
+                        }
+                    });
+            });
         });
     }
 

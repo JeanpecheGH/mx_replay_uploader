@@ -9,6 +9,7 @@ pub enum State {
     Connecting(ConnectPromise),
     ReplayFolder(bool, Option<String>),
     ListView,
+    LogView,
     Uploading(UploadPromise),
 }
 
@@ -28,6 +29,9 @@ impl eframe::App for ReplayUploaderApp {
             }
             State::ListView => {
                 self.list_view(ctx);
+            }
+            State::LogView => {
+                self.log_view(ctx);
             }
             State::Uploading(promise) => {
                 self.wait_upload(ctx, promise);
