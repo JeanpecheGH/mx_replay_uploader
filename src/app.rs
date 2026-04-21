@@ -327,7 +327,7 @@ impl ReplayUploaderApp {
                         .body(|mut body| {
                             let mut headers: Vec<(GbxHeader, usize)> =
                                 replays.values().cloned().collect();
-                            headers.sort_by(|(_, a), (_, b)| a.cmp(b));
+                            headers.sort_by_key(|(_, a)| *a);
                             for (hdr, _) in headers {
                                 body.row(30.0, |mut row| {
                                     row.col(|ui| {
