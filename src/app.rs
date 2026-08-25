@@ -9,7 +9,7 @@ use crate::mx_client::upload_response::UploadResponse;
 use crate::pref::Pref;
 use crate::watcher;
 use eframe::emath::Align;
-use egui::{Layout, RichText, Spinner};
+use egui::{Layout, RichText, Spinner, ViewportCommand};
 use egui_extras::{Column, TableBuilder};
 use notify::event::ModifyKind::Name;
 use notify::{Event, EventKind};
@@ -38,6 +38,13 @@ pub struct ReplayUploaderApp {
     logs: Vec<Log>,
     pref: Pref,
     state: State,
+    closing_state: ClosingState,
+}
+#[derive(Copy, Clone, PartialEq)]
+pub enum ClosingState {
+    Open,
+    Uploading,
+    Closing,
 }
 
 impl ReplayUploaderApp {
@@ -123,7 +130,7 @@ impl ReplayUploaderApp {
         self.state = State::Connecting(Rc::new(promise));
     }
 
-    fn upload_replays(&mut self) {
+    fn upload_replays(&mut self) -> bool {
         let mut replays = self
             .replays
             .lock()
@@ -135,6 +142,14 @@ impl ReplayUploaderApp {
                 Promise::spawn_async(async move { client.upload_all(r).await });
             replays.clear();
             self.state = State::Uploading(Rc::new(promise));
+            true
+        } else {
+            drop(replays);
+            self.log(
+                LogKind::Upload,
+                "No available replay to upload currently".to_string(),
+            );
+            false
         }
     }
 
@@ -157,6 +172,7 @@ impl ReplayUploaderApp {
             logs: Vec::new(),
             pref,
             state: State::Credentials(false, None),
+            closing_state: ClosingState::Open,
         }
     }
 
@@ -428,6 +444,10 @@ impl ReplayUploaderApp {
                 }
             }
             self.state = State::ListView;
+            if self.closing_state == ClosingState::Uploading {
+                self.closing_state = ClosingState::Closing;
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
         }
         // Draw waiting panel in all cases
         self.wait_spinner(ctx, "Uploading replays to ManiaExchange")

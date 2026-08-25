@@ -1,4 +1,4 @@
-use crate::app::{ConnectPromise, ReplayUploaderApp, UploadPromise};
+use crate::app::{ClosingState, ConnectPromise, ReplayUploaderApp, UploadPromise};
 use crate::pref;
 use eframe::Frame;
 use eframe::glow::Context;
@@ -37,10 +37,25 @@ impl eframe::App for ReplayUploaderApp {
                 self.wait_upload(ctx, promise);
             }
         }
+
+        // Cancel the close
+        if ctx.input(|i| i.viewport().close_requested()) {
+            match self.closing_state {
+                ClosingState::Open => {
+                    if self.upload_replays() {
+                        self.closing_state = ClosingState::Uploading;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    }
+                }
+                ClosingState::Uploading => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                }
+                ClosingState::Closing => (),
+            }
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&Context>) {
-        self.upload_replays();
         match pref::save_pref(&self.pref) {
             Ok(()) => println!("Preferences successfully saved"),
             Err(e) => println!("Error saving pref: {}", e),
