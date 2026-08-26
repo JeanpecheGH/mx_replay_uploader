@@ -17,22 +17,7 @@ jobs:
       - name: Build
         run: cargo build --verbose --release
       - name: Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
+        uses: softprops/action-gh-release@v3
         with:
-          draft: false
-          prerelease: false
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          body_path: CHANGELOG.md
-      - name: Upload binary
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ${{ github.workspace }}\target\release\mx_replay_uploader.exe
-          asset_name: MXReplayUploader.exe
-          asset_content_type: application/vnd.microsoft.portable-executable
+          body_path: ${{ github.workspace }}\CHANGELOG.md
+          files: ${{ github.workspace }}\target\release\mx_replay_uploader.exe
